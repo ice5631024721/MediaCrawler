@@ -10,11 +10,12 @@ import re
 from typing import Any, Callable, Dict, List, Optional
 from urllib.parse import urlencode
 
+import html2text
 import httpx
+from magic_html import GeneralExtractor
 from playwright.async_api import BrowserContext, Page
 
 from tools import utils
-
 from .exception import DataFetchError
 from .field import SearchType
 
@@ -32,7 +33,7 @@ class ToutiaoClient:
         self.proxies = proxies
         self.timeout = timeout
         self.headers = headers
-        self._host = "https://m.toutiao.com"
+        self._host = "https://so.toutiao.com"
         self.playwright_page = playwright_page
         self.cookie_dict = cookie_dict
         self._image_agent_host = "https://i1.wp.com/"
@@ -44,11 +45,11 @@ class ToutiaoClient:
                 **kwargs
             )
         data = response.content
-        if data.get("ok") != 1:
+        if response.status_code != 200:
             utils.logger.error(f"[ToutiaoClient.request] request {method}:{url} err, res:{data}")
             raise DataFetchError(data.get("msg", "unkonw error"))
         else:
-            return data.get("data", {})
+            return {"data": data}
 
     async def get(self, uri: str, params=None, headers=None) -> Dict:
         final_uri = uri
@@ -100,14 +101,15 @@ class ToutiaoClient:
         :return:
         """
         uri = "/search"
-        containerid = f"pd={search_type.value}&q={keyword}"
         params = {
-            "containerid": containerid,
-            "page_type": "searchall",
-            "page": page,
+            "source": "input",
+            "pd": search_type.value,
+            "keyword": keyword,
+            "page_num": page,
             "action_type": "search_subtab_switch",
             "from": "news",
-            "cur_tab_title": "news"
+            "cur_tab_title": "news",
+            "dvpf": "pc"
         }
         return await self.get(uri, params)
 
@@ -207,3 +209,22 @@ class ToutiaoClient:
                 return None
             else:
                 return response.content
+
+    async def get_note_by_id(self, article_url: str) -> Dict:
+        async with httpx.AsyncClient(proxies=self.proxies, follow_redirects=True) as client:
+            response = await client.request(
+                "GET", article_url, timeout=self.timeout, headers=self.headers
+            )
+
+            if response.status_code != 200:
+                raise DataFetchError(f"get toutiao detail err: {response.text}")
+
+            if response.text is None:
+                raise DataFetchError((f"get toutiao detail none: {response.text}"))
+
+            extractor = GeneralExtractor()
+            data = extractor.extract(response.text, base_url=article_url, html_type="forum")
+            strs = article_url.split("/")
+            markdown = html2text.html2text(data['html'])
+            note_id = strs[-2] if len(strs) > 2 else None
+            return {"content": markdown, "note_id": note_id[1:]}
